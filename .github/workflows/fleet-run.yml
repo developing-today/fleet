@@ -56,6 +56,28 @@ name: fleet-run (generic dispatch runner)
 # needs no machinery of its own — it is just shell: put
 # `cmd1 && cmd2` (or `cmd1; cmd2`) in one command string.
 #
+# FORK DELTAS (developing-today/fleet — see docs/placement.md; these
+# diverge from upstream dezren39/fleet on purpose and must survive
+# upstream syncs):
+#
+# * A `runner` dispatch input (github | blacksmith) moves the run
+#   job's legs between GitHub-hosted runners (ubuntu-24.04) and
+#   Blacksmith (blacksmith-4vcpu-ubuntu-2404, org repos only — the
+#   Blacksmith app is org-scoped). The setup job always stays on
+#   GitHub-hosted: it is seconds of jq, and keeping it there keeps
+#   Blacksmith minutes meaning "the legs".
+#
+# * Any jobs entry may carry a `cache` object:
+#     {"push_nix": true} — after the command, if the working tree
+#       holds a ./result symlink, sign its closure with
+#       NIX_CACHE_SIGNING_KEY and `nix copy` it to
+#       NIX_CACHE_UPLOAD_URL (the fleet R2 cache), so follow-up jobs
+#       on ANY surface fetch instead of rebuild. Skips quietly when
+#       the secrets are not configured on the hosting repo.
+#     {"actions_key": "...", "actions_path": "..."} — an
+#       actions/cache restore/save of the workspace-relative path
+#       under the given key, for non-nix artifacts.
+#
 # Guardrails, such as they are, are structural: the workflow only
 # runs on workflow_dispatch (dispatching requires write access to
 # this repo), the target repos are restricted to the five fleet
@@ -112,6 +134,14 @@ on:
         type: number
         required: false
         default: 60
+      runner:
+        description: "Runner provider for the legs: github (ubuntu-24.04) or blacksmith (blacksmith-4vcpu-ubuntu-2404; org surfaces only)"
+        type: choice
+        required: false
+        default: "github"
+        options:
+          - github
+          - blacksmith
 
 permissions:
   contents: read
@@ -183,7 +213,7 @@ jobs:
                     elif (has("depth") and (((.depth | type) != "number") or (.depth != (.depth | floor)) or (.depth < 0))) then
                       error("entry \($i) repo \(.repo) has invalid depth \(.depth) — must be an integer >= 0")
                     else
-                      {repo: .repo, ref: (.ref // ""), depth: (.depth // 1), command: $e.command, mode: "single"}
+                      {repo: .repo, ref: (.ref // ""), depth: (.depth // 1), command: $e.command, mode: "single", cache_push_nix: ($e.cache.push_nix // false), cache_key: ($e.cache.actions_key // ""), cache_path: ($e.cache.actions_path // "")}
                     end
                   end
                 elif ($e | has("together")) then
@@ -204,7 +234,7 @@ jobs:
                     | if (($bases | length) != ($bases | unique | length)) then
                         error("entry \($i) (together) has duplicate repo basenames: \($bases | join(", "))")
                       else
-                        {repo: ($bases | join("+")), ref: "", command: $e.command, mode: "together", checkouts: $cos}
+                        {repo: ($bases | join("+")), ref: "", command: $e.command, mode: "together", checkouts: $cos, cache_push_nix: ($e.cache.push_nix // false), cache_key: ($e.cache.actions_key // ""), cache_path: ($e.cache.actions_path // "")}
                       end
                   end
                 else
@@ -213,7 +243,7 @@ jobs:
                   elif (($e | has("depth")) and ((($e.depth | type) != "number") or ($e.depth != ($e.depth | floor)) or ($e.depth < 0))) then
                     error("entry \($i) (flat) has invalid depth \($e.depth) — must be an integer >= 0")
                   else
-                    {repo: $e.repo, ref: ($e.ref // ""), depth: ($e.depth // 1), command: $e.command, mode: "single"}
+                    {repo: $e.repo, ref: ($e.ref // ""), depth: ($e.depth // 1), command: $e.command, mode: "single", cache_push_nix: ($e.cache.push_nix // false), cache_key: ($e.cache.actions_key // ""), cache_path: ($e.cache.actions_path // "")}
                   end
                 end
             ]' <<<"$entries") || fail "jobs validation failed (see the error above)"
@@ -253,7 +283,7 @@ jobs:
   run:
     name: "run (${{ matrix.repo }} #${{ matrix.idx }})"
     needs: setup
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner == 'blacksmith' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     # The input is clamped into range so an out-of-range value can
     # never set an absurd timeout; the validate step then fails the
     # run fast with the reason.
@@ -321,6 +351,12 @@ jobs:
             fi
             git clone "${clone_args[@]}" "https://x-access-token:${CLONE_TOKEN}@github.com/${repo}.git" "$dest"
           done < <(jq -c '.[]' <<<"$CHECKOUTS_JSON")
+      - name: Restore actions/cache (opt-in per entry)
+        if: ${{ matrix.cache_key != '' }}
+        uses: actions/cache@v4
+        with:
+          path: ${{ matrix.cache_path }}
+          key: ${{ matrix.cache_key }}
       - name: Run command
         if: ${{ matrix.mode == 'single' }}
         env:
@@ -345,3 +381,34 @@ jobs:
             echo "  $repo -> repos/$base (HEAD $(git -C "repos/$base" rev-parse HEAD))"
           done < <(jq -c '.[]' <<<"$CHECKOUTS_JSON")
           bash -lc "$FLEET_RUN_COMMAND"
+
+      - name: Push build results to the fleet R2 cache (opt-in per entry)
+        if: ${{ matrix.cache_push_nix }}
+        env:
+          NIX_CACHE_SIGNING_KEY: ${{ secrets.NIX_CACHE_SIGNING_KEY }}
+          NIX_CACHE_UPLOAD_URL: ${{ secrets.NIX_CACHE_UPLOAD_URL }}
+          LEG_MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+          # Same sign+copy pattern as containers/fleet-build/export.sh.
+          if [ -z "$NIX_CACHE_SIGNING_KEY" ] || [ -z "$NIX_CACHE_UPLOAD_URL" ]; then
+            echo "::notice::cache push requested but NIX_CACHE_SIGNING_KEY / NIX_CACHE_UPLOAD_URL are not configured on this repo — skipping (see docs/placement.md)"
+            exit 0
+          fi
+          workdir="$GITHUB_WORKSPACE"
+          if [ "$LEG_MODE" = "single" ]; then
+            workdir="$GITHUB_WORKSPACE/target"
+          fi
+          cd "$workdir"
+          if [ ! -e ./result ]; then
+            echo "::notice::no ./result symlink in $workdir — nothing to push"
+            exit 0
+          fi
+          out=$(readlink -f ./result)
+          keyfile=$(mktemp)
+          chmod 600 "$keyfile"
+          printf '%s' "$NIX_CACHE_SIGNING_KEY" > "$keyfile"
+          nix path-info --recursive "$out" | nix store sign --key-file "$keyfile" --stdin
+          nix copy --to "$NIX_CACHE_UPLOAD_URL" "$out"
+          rm -f "$keyfile"
+          echo "pushed $out to the fleet R2 cache for follow-up jobs on any surface"
