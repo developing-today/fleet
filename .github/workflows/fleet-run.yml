@@ -97,9 +97,18 @@ name: fleet-run (generic dispatch runner)
 # privileges the way the variant legs do:
 #   runuser -u vscode -- env HOME=/home/vscode bash -lc '...'
 #
-# Checkout of the target repos uses the classic PAT in
+# Checkout auth follows the split developing-today/code's
+# org-run.yml proved (dezren39/fleet#74): the classic PAT in
 # GHCR_ORG_PAT (repo scope; it can read all five fleet repos —
-# this repo's GITHUB_TOKEN could only read this one).
+# this repo's GITHUB_TOKEN could only read this one) is used
+# when it is actually present on the hosting repo, and only
+# then. When it is absent — a fresh fork before secret
+# provisioning, say — the leg does NOT hand actions/checkout
+# an empty token (checkout hard-fails with "Input required
+# and not supplied: token"); the resolve step below reports
+# the token as unavailable and the (all-public) targets are
+# cloned anonymously instead, with the same depth/ref
+# semantics. An empty token input is never emitted.
 
 on:
   workflow_dispatch:
@@ -318,8 +327,26 @@ jobs:
             echo "::error::timeout_minutes must be between 5 and 120 (got $TIMEOUT_MINUTES)"
             exit 1
           fi
-      - name: Check out the target repo
-        if: ${{ matrix.mode == 'single' }}
+      - name: Resolve checkout auth
+        id: auth
+        env:
+          GHCR_ORG_PAT: ${{ secrets.GHCR_ORG_PAT }}
+        run: |
+          set -euo pipefail
+          # Checkout auth split (org-run pattern, dezren39/fleet#74):
+          # actions/checkout hard-fails on an explicitly empty token
+          # input, so the token is used only when one is actually
+          # provisioned on this repo; otherwise the leg falls back
+          # to anonymous clones of the (all-public) targets.
+          if [ -n "$GHCR_ORG_PAT" ]; then
+            echo "checkout auth: GHCR_ORG_PAT (provisioned)"
+            echo "has_token=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "checkout auth: anonymous (GHCR_ORG_PAT not provisioned on this repo)"
+            echo "has_token=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Check out the target repo (GHCR_ORG_PAT)
+        if: ${{ matrix.mode == 'single' && steps.auth.outputs.has_token == 'true' }}
         uses: actions/checkout@v4
         with:
           repository: ${{ matrix.repo }}
@@ -327,6 +354,22 @@ jobs:
           fetch-depth: ${{ matrix.depth }}
           token: ${{ secrets.GHCR_ORG_PAT }}
           path: target
+      - name: Check out the target repo (public repos, anonymous)
+        if: ${{ matrix.mode == 'single' && steps.auth.outputs.has_token != 'true' }}
+        env:
+          TARGET_REPO: ${{ matrix.repo }}
+          TARGET_REF: ${{ matrix.ref }}
+          TARGET_DEPTH: ${{ matrix.depth }}
+        run: |
+          set -euo pipefail
+          clone_args=()
+          if [ "$TARGET_DEPTH" -ge 1 ]; then
+            clone_args+=(--depth "$TARGET_DEPTH")
+          fi
+          if [ -n "$TARGET_REF" ]; then
+            clone_args+=(--branch "$TARGET_REF")
+          fi
+          git clone "${clone_args[@]}" "https://github.com/${TARGET_REPO}.git" "$GITHUB_WORKSPACE/target"
       - name: Clone the together repos side-by-side
         if: ${{ matrix.mode == 'together' }}
         env:
@@ -334,7 +377,9 @@ jobs:
           CLONE_TOKEN: ${{ secrets.GHCR_ORG_PAT }}
         run: |
           set -euo pipefail
-          echo "::add-mask::$CLONE_TOKEN"
+          if [ -n "$CLONE_TOKEN" ]; then
+            echo "::add-mask::$CLONE_TOKEN"
+          fi
           mkdir -p "$GITHUB_WORKSPACE/repos"
           while read -r item; do
             repo=$(jq -r '.repo' <<<"$item")
@@ -349,7 +394,12 @@ jobs:
             if [ -n "$ref" ]; then
               clone_args+=(--branch "$ref")
             fi
-            git clone "${clone_args[@]}" "https://x-access-token:${CLONE_TOKEN}@github.com/${repo}.git" "$dest"
+            if [ -n "$CLONE_TOKEN" ]; then
+              url="https://x-access-token:${CLONE_TOKEN}@github.com/${repo}.git"
+            else
+              url="https://github.com/${repo}.git"
+            fi
+            git clone "${clone_args[@]}" "$url" "$dest"
           done < <(jq -c '.[]' <<<"$CHECKOUTS_JSON")
       - name: Restore actions/cache (opt-in per entry)
         if: ${{ matrix.cache_key != '' }}
