@@ -171,6 +171,14 @@ jobs:
 
   build-full:
     needs: warm-export
+    # fleet#28: an optional leg's HARD job death (runner killed mid-step)
+    # fails its warm-export job, and default needs semantics would skip
+    # this publish even though every required repo exported fine.
+    # !cancelled() runs the publish on any non-cancelled needs outcome;
+    # the merge step below stays the real gate — it hard-fails if a
+    # REQUIRED repo's nar cache is missing or empty. A cancelled run
+    # still blocks the publish.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -225,6 +233,11 @@ jobs:
     # the exact way consuming repos will use it, including a warmed
     # shell opening with the network off.
     needs: build-full
+    # fleet#28 (transitive): smoke whenever build-full actually
+    # succeeded, regardless of what happened to the optional export
+    # legs upstream of it — and never against a stale image after a
+    # build-full failure.
+    if: ${{ !cancelled() && needs.build-full.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     container:
@@ -242,9 +255,34 @@ jobs:
           # 41513747440); runuser from root does not, and HOME must be
           # pointed at the vscode home for its Nix profile to resolve.
           runuser -u vscode -- env HOME=/home/vscode bash -lc 'nix --version && go version'
+      # fleet#70: smoke the code rev the warm-export legs actually
+      # realised — this repo's committed `code` submodule pin — not
+      # code's floating main. A floating checkout can carry a
+      # flake.nix whose inputs have moved past its committed lock
+      # (the fork reorganization did exactly this), and then
+      # `nix develop --offline` tries to refresh the lock mid-smoke:
+      # a write the offline test should never need, against a closure
+      # that was never warmed. The pin's lock is the nar-cache key
+      # basis, so the pinned rev is the one whose shell is guaranteed
+      # to be in the image's store.
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - name: Resolve the committed code submodule pin
+        id: code-pin
+        run: |
+          # The checkout is owned by the runner host's uid; git as
+          # root calls that dubious ownership and refuses (the same
+          # wall warm-export documents, run 41520691666).
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          pin=$(git ls-tree HEAD code | awk '{print $3}')
+          if [ -z "$pin" ]; then echo "ERROR: no code submodule pin at HEAD" >&2; exit 1; fi
+          echo "code submodule pin: $pin"
+          echo "pin=$pin" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
           repository: developing-today/code
+          ref: ${{ steps.code-pin.outputs.pin }}
           path: code-check
       - name: Warmed shell opens OFFLINE from the image's store
         run: |
@@ -253,6 +291,15 @@ jobs:
           # hit the same wall (run 41523275400) — mark paths safe in
           # vscode's git config first.
           runuser -u vscode -- env HOME=/home/vscode git config --global --add safe.directory '*'
+          # The smoke reads the checkout but must never need to write
+          # it: run the develop against a vscode-owned copy, so a lock
+          # refresh (should one ever be attempted) lands in the copy
+          # instead of dying on the root-owned tree (fleet#70). The
+          # copy is runner-local disk only — the offline guarantee is
+          # unchanged: the shell still has to come from the image's
+          # store.
+          cp -a "$GITHUB_WORKSPACE/code-check" "$GITHUB_WORKSPACE/code-smoke"
+          chown -R vscode:vscode "$GITHUB_WORKSPACE/code-smoke"
           # code warms its lean `fleet` shell (see warm-manifest.txt),
           # not the default shell — open the one that was warmed.
-          timeout 600 runuser -u vscode -- env HOME=/home/vscode bash -lc 'cd "$GITHUB_WORKSPACE/code-check" && nix develop .#fleet --offline --accept-flake-config --command true'
+          timeout 600 runuser -u vscode -- env HOME=/home/vscode bash -lc 'cd "$GITHUB_WORKSPACE/code-smoke" && nix develop .#fleet --offline --accept-flake-config --command true'
