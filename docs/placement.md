@@ -39,7 +39,7 @@ says so in its decision output rather than falling back.
 Status at writing (2026-11-04): `fleet-personal` is fully active.
 `fleet-org` and `fleet-org-blacksmith` wait on one org-owner grant
 (add this repo to the app installation — the API refuses non-owners)
-plus repo secrets (below). `org-run` waits on its workflow landing.
+plus repo secrets (below). `org-run` is live (its workflow landed on code main, with the `runner` input added for parity).
 `codespace-overflow` waits on the `codespace` OAuth scope for `gh`. `fleet-forks` waits on the app being *installed* on `developing-today-forks` at all.
 
 ## The registry is the system
@@ -308,9 +308,11 @@ third copy in another org starts from this file, not from upstream.
    `capacity()` reports against it — placement must never spend a
    budget it cannot see.
 
-### org-run parity (pending)
+### org-run parity (done)
 
-`org-run` is pre-registered but its workflow is still landing in the
-code repo. When it merges: flip its registry `status` to `active`
-here, and land the `runner` input on `org-run.yml` as a small
-follow-up PR so the Blacksmith variant exists there too.
+`org-run.yml` landed on code main on 2026-11-04 and the `runner`
+input followed the same day (code PR #5417, merged as the app), so
+the org-run surface is `active` in the registry and the Blacksmith
+variant exists there too — a `fleet-org-blacksmith`-style registry
+entry on the code host is all that remains if Blacksmith legs are
+ever wanted on org-run itself.

@@ -81,14 +81,17 @@
       "app_installation": 174792676,
       "id": "org-run",
       "kind": "github-actions",
-      "notes": "Org-level generic runner hosted in the code repo (sibling build, in flight 2026-11-04). Entry pre-registered so it becomes placeable the moment org-run.yml lands on code main with no dispatcher change. Runner-variant (blacksmith) parity for org-run is a follow-up PR once it merges; see docs/placement.md.",
+      "notes": "Org-level generic runner hosted in the code repo (org-run.yml landed on code main 2026-11-04; runner input parity added by code PR #5417, merged as the app). Dispatches as the app via the org installation. Allowlist = the six org repos in targets.",
       "owner": "developing-today",
       "repo": "developing-today/code",
-      "status": "pending-workflow",
+      "status": "active",
       "targets": [
         "developing-today/code",
         "developing-today/opencode",
-        "developing-today/openchamber"
+        "developing-today/openchamber",
+        "developing-today/.github",
+        "developing-today/hardware-doc",
+        "developing-today/zulip-archive"
       ],
       "workflow": "org-run.yml"
     },
