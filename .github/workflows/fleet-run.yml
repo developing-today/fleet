@@ -102,6 +102,11 @@ name: fleet-run (generic dispatch runner)
 # fleet-umbrella-verify.yml (docs/execution-surfaces.md). Dispatch
 # behaviour is unchanged.
 #
+# Runner selection (2026-11-06): run legs default to GitHub-hosted;
+# Blacksmith is explicit and guarded to the org repository where the
+# app is installed. Setup/validation stays on GitHub-hosted Linux so
+# it does not consume paid runner minutes.
+#
 # The legs run in the published org image
 # ghcr.io/developing-today/fleet-build:full as root: the pinned
 # toolchain, Nix, and the baked cache configuration are already
@@ -194,10 +199,21 @@ on:
         type: number
         required: false
         default: 60
+      runner:
+        description: "Runner provider for the legs: github (ubuntu-24.04) or blacksmith (blacksmith-4vcpu-ubuntu-2404; org surfaces only)"
+        type: string
+        required: false
+        default: "github"
     secrets:
       GHCR_ORG_PAT:
-        description: "Classic PAT the legs use to check out target repos (repo scope)"
-        required: true
+        description: "Optional PAT for private target repos; public targets use anonymous clones when it is absent"
+        required: false
+      NIX_CACHE_SIGNING_KEY:
+        description: "Optional signing key for Nix closure uploads"
+        required: false
+      NIX_CACHE_UPLOAD_URL:
+        description: "Optional Nix cache upload URL"
+        required: false
 
 permissions:
   contents: read
@@ -222,6 +238,7 @@ jobs:
           SINGLE_REPO: ${{ inputs.repo }}
           SINGLE_REF: ${{ inputs.ref }}
           SINGLE_COMMAND: ${{ inputs.command }}
+          RUNNER_PROVIDER: ${{ inputs.runner }}
         run: |
           set -euo pipefail
 
@@ -229,6 +246,10 @@ jobs:
             echo "::error::$1"
             exit 1
           }
+
+          if [ "$RUNNER_PROVIDER" = "blacksmith" ] && [ "$GITHUB_REPOSITORY" != "developing-today/fleet" ]; then
+            fail "Blacksmith is configured only for developing-today/fleet; select runner=github on this surface"
+          fi
 
           allowlist='["developing-today/code", "developing-today/opencode", "developing-today/openchamber", "dezren39/darwin-nix", "dezren39/fleet", "developing-today/zettel", "developing-today/.github", "developing-today/zulip-archive", "developing-today/hardware-doc", "dezren39/zettel", "dezren39/hatch"]'
 

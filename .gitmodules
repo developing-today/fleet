@@ -34,3 +34,33 @@
 [submodule "hardware-doc"]
 	path = hardware-doc
 	url = https://github.com/developing-today/hardware-doc.git
+[submodule "openclaw-personal"]
+	path = openclaw-personal
+	url = https://github.com/dezren39/openclaw-personal.git
+[submodule "cairn-private"]
+	path = cairn-private
+	url = https://github.com/dezren39/cairn-private.git
+[submodule "kaneo"]
+	path = kaneo
+	url = https://github.com/developing-today/kaneo.git
+[submodule "nix-cache"]
+	path = nix-cache
+	url = https://github.com/developing-today/nix-cache.git
+[submodule "hatch-drawer"]
+	path = hatch-drawer
+	url = https://github.com/dezren39/hatch-drawer.git
+[submodule "hatch-personal-drawer"]
+	path = hatch-personal-drawer
+	url = https://github.com/dezren39/hatch-personal-drawer.git
+[submodule "opencode-muse"]
+	path = opencode-muse
+	url = https://github.com/dezren39/opencode-muse.git
+[submodule "opencode-auto-continue"]
+	path = opencode-auto-continue
+	url = https://github.com/developing-today/opencode-auto-continue.git
+[submodule "dezren39"]
+	path = dezren39
+	url = https://github.com/dezren39/dezren39.git
+[submodule "muse-esp32-screen"]
+	path = muse-esp32-screen
+	url = https://github.com/dezren39/muse-esp32-screen.git

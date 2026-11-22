@@ -1,0 +1,163 @@
+name: sync-forks (push main out to every fork)
+
+# Fixes land HERE, on dezren39/fleet main, and the forks follow
+# (Drew, 2026-11-22). The forks already pull from upstream once a
+# day (sync-upstream.yml, App-driven, defined in this tree); this
+# workflow is the push-driven complement: every push to main here
+# immediately offers the new main to EVERY fork, so the fleet
+# converges in minutes instead of at the next daily pull. The daily
+# pull stays as the backstop for anything this run misses.
+#
+# How a fork is synced: GitHub's merge-upstream API
+# (POST /repos/<fork>/merge-upstream, branch main) — the same call
+# a human makes with the "Sync fork" button. It fast-forwards a
+# fork that is a strict prefix of upstream and clean-merges
+# otherwise; it never force-pushes and never auto-resolves a
+# conflict. Fork-local deltas (e.g. developing-today/fleet's
+# fleet-run fork deltas) survive a clean merge; a true divergence
+# conflicts and lands on the failure list below.
+#
+# Auth: the classic PAT in this repo's GHCR_ORG_PAT secret. The
+# workflow's own GITHUB_TOKEN cannot write other repositories, and
+# dispatching requires write access here, which is the gate. The
+# PAT must carry the `workflow` scope in addition to `repo`: any
+# sync whose delta touches .github/workflows/ is refused without
+# it (proven by the first run, 2026-11-22 — all 102 forks refused
+# on exactly that gate when this workflow file itself landed).
+# Known caveat: fork mains locked by a ruleset whose only bypass
+# is the developing.today App (developing-today/fleet,
+# developing-today-forks/fleet) may refuse a PAT sync — those
+# forks keep converging through their App-driven daily pull, and
+# their refusal shows up on this run's failure list, which is the
+# signal to extend their bypass or accept the daily cadence for
+# them.
+#
+# Failure contract (Drew, 2026-11-22): attempt EVERY fork, no
+# matter how many fail. The job fails only at the END, with the
+# failed forks listed in the log and the job summary, and one
+# issue filed in developing-today/code carrying the same list as
+# a todo. Archived forks are skipped, not failed (they are
+# read-only by definition). A missing PAT is a configuration
+# error and fails the run immediately, before any fork is touched.
+#
+# This file only ever acts in dezren39/fleet itself (the job-level
+# guard below): the forks receive this file through their sync,
+# and it must be inert there.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: push main to all forks
+    if: github.repository == 'dezren39/fleet'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Sync every fork from dezren39/fleet@main
+        env:
+          GH_TOKEN: ${{ secrets.GHCR_ORG_PAT }}
+          UPSTREAM: dezren39/fleet
+          BRANCH: main
+          TODO_REPO: developing-today/code
+        run: |
+          set -uo pipefail
+
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::GHCR_ORG_PAT secret is not set on $UPSTREAM; no fork was touched."
+            exit 1
+          fi
+
+          work="${RUNNER_TEMP:-/tmp}/sync-forks"
+          mkdir -p "$work"
+          synced="$work/synced.txt"; current="$work/current.txt"
+          failed="$work/failed.txt"; skipped="$work/skipped.txt"
+          : > "$synced"; : > "$current"; : > "$failed"; : > "$skipped"
+
+          # Every fork, every page. Archived forks are recorded as
+          # skipped up front so the loop only sees syncable ones.
+          gh api --paginate "repos/$UPSTREAM/forks?per_page=100" \
+            --jq '.[] | select(.archived == true) | .full_name' > "$skipped" || true
+          mapfile -t forks < <(gh api --paginate "repos/$UPSTREAM/forks?per_page=100" \
+            --jq '.[] | select(.archived == false) | .full_name')
+
+          echo "Syncing ${#forks[@]} forks from $UPSTREAM@$BRANCH (skipped archived: $(wc -l < "$skipped"))"
+
+          for fork in "${forks[@]}"; do
+            if out=$(gh api -X POST "repos/$fork/merge-upstream" -f branch="$BRANCH" 2>&1); then
+              mtype=$(printf '%s' "$out" | jq -r '.merge_type // "unknown"' 2>/dev/null || echo unknown)
+              if [ "$mtype" = "none" ]; then
+                echo "$fork" >> "$current"
+                echo "CURRENT  $fork"
+              else
+                echo "$fork ($mtype)" >> "$synced"
+                echo "SYNCED   $fork ($mtype)"
+              fi
+            else
+              msg=$(printf '%s' "$out" | jq -r '.message // empty' 2>/dev/null || true)
+              [ -n "$msg" ] || msg=$(printf '%s' "$out" | head -c 300)
+              echo "$fork — $msg" >> "$failed"
+              echo "FAILED   $fork — $msg"
+            fi
+          done
+
+          n_synced=$(wc -l < "$synced"); n_current=$(wc -l < "$current")
+          n_failed=$(wc -l < "$failed"); n_skipped=$(wc -l < "$skipped")
+
+          {
+            echo "## Fork sync from $UPSTREAM@$BRANCH"
+            echo ""
+            echo "- Synced: $n_synced"
+            echo "- Already current: $n_current"
+            echo "- Skipped (archived): $n_skipped"
+            echo "- Failed: $n_failed"
+            if [ "$n_failed" -gt 0 ]; then
+              echo ""
+              echo "### Failed forks"
+              echo ""
+              sed 's/^/- /' "$failed"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$n_failed" -eq 0 ]; then
+            echo "All forks synced or current."
+            exit 0
+          fi
+
+          # One todo issue in the code repo carrying the failure
+          # list. Filed through the REST API, not `gh issue create`:
+          # issue creation via GraphQL is a separate rate-limit
+          # bucket that this PAT's owner can be walled in precisely
+          # when a big sync just ran (proven by the first run,
+          # 2026-11-22 — the list survived only in the job summary).
+          # If filing itself fails, the job still fails with the
+          # list in the summary and log above.
+          body="$work/issue-body.md"
+          {
+            echo "The sync-forks workflow in dezren39/fleet pushed \`$BRANCH\`"
+            echo "(commit $GITHUB_SHA) out to every fork. The forks below could"
+            echo "not be synced and need a human/agent pass — most likely a"
+            echo "merge conflict with fork-local deltas, or a ruleset that"
+            echo "refuses a PAT sync (the App-driven daily pull in"
+            echo "sync-upstream.yml remains their backstop)."
+            echo ""
+            sed 's/^/- /' "$failed"
+            echo ""
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } > "$body"
+          payload="$work/issue.json"
+          jq -n --arg title "fleet: fork sync failed for $n_failed fork(s) after $UPSTREAM@${GITHUB_SHA:0:7}" \
+                --rawfile body "$body" '{title: $title, body: $body}' > "$payload"
+          if gh api -X POST "repos/$TODO_REPO/issues" --input "$payload" --jq '.html_url'; then
+            echo "Filed the failure list as an issue in $TODO_REPO."
+          else
+            echo "::warning::Could not file the failure issue in $TODO_REPO; the list stands in the job summary."
+          fi
+
+          echo "::error::$n_failed fork(s) failed to sync; see the job summary for the list."
+          exit 1
