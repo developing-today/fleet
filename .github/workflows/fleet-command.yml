@@ -150,12 +150,59 @@ defaults:
     shell: bash
 
 jobs:
+  normalize:
+    name: Select execution target
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    outputs:
+      platform: ${{ steps.target.outputs.platform }}
+      runner: ${{ steps.target.outputs.runner }}
+      timeout_minutes: ${{ steps.target.outputs.timeout_minutes }}
+    steps:
+      - name: Normalize and validate target
+        id: target
+        env:
+          PLATFORM_INPUT: ${{ inputs.platform }}
+          PLATFORM_EVENT: ${{ github.event.inputs.platform }}
+          RUNNER_INPUT: ${{ inputs.runner }}
+          RUNNER_EVENT: ${{ github.event.inputs.runner }}
+          TIMEOUT_INPUT: ${{ inputs.timeout_minutes }}
+          TIMEOUT_EVENT: ${{ github.event.inputs.timeout_minutes }}
+          WORKFLOW_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          platform="${PLATFORM_INPUT:-${PLATFORM_EVENT:-linux}}"
+          runner="${RUNNER_INPUT:-${RUNNER_EVENT:-github}}"
+          timeout="${TIMEOUT_INPUT:-${TIMEOUT_EVENT:-60}}"
+          case "$platform" in
+            linux|macos) ;;
+            *) echo "::error::platform must be linux or macos (got $platform)"; exit 2 ;;
+          esac
+          case "$runner" in
+            github|blacksmith) ;;
+            *) echo "::error::runner must be github or blacksmith (got $runner)"; exit 2 ;;
+          esac
+          if [[ ! "$timeout" =~ ^[0-9]+$ ]] || [ "$timeout" -lt 5 ] || [ "$timeout" -gt 120 ]; then
+            echo "::error::timeout_minutes must be between 5 and 120 (got $timeout)"
+            exit 2
+          fi
+          if [ "$runner" = blacksmith ] && [ "$WORKFLOW_REPO" != developing-today/fleet ]; then
+            echo "::error::Blacksmith is configured only for developing-today/fleet"
+            exit 2
+          fi
+          if [ "$runner" = blacksmith ] && [ "$platform" = macos ]; then
+            echo "::error::Blacksmith is Linux-only; select runner=github for macOS"
+            exit 2
+          fi
+          printf 'platform=%s\nrunner=%s\ntimeout_minutes=%s\n' "$platform" "$runner" "$timeout" >> "$GITHUB_OUTPUT"
+          echo "Selected platform=$platform runner=$runner timeout_minutes=$timeout"
+
   run_linux:
     name: "Linux (${{ inputs.repo }})"
-    # Older/manual dispatch clients may omit platform; keep Linux as the safe default.
-    if: ${{ (inputs.platform || github.event.inputs.platform || 'linux') != 'macos' }}
-    runs-on: ${{ (inputs.runner || github.event.inputs.runner) == 'blacksmith' && github.repository == 'developing-today/fleet' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
-    timeout-minutes: ${{ inputs.timeout_minutes }}
+    needs: normalize
+    if: ${{ needs.normalize.outputs.platform == 'linux' }}
+    runs-on: ${{ needs.normalize.outputs.runner == 'blacksmith' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
+    timeout-minutes: ${{ fromJSON(needs.normalize.outputs.timeout_minutes) }}
     container:
       image: ${{ inputs.container_image != '' && inputs.container_image || 'ghcr.io/dezren39/fleet-build:full' }}
       options: --user root
@@ -169,8 +216,8 @@ jobs:
           repo: ${{ inputs.repo }}
           ref: ${{ inputs.ref }}
           command: ${{ inputs.command }}
-          runner: ${{ inputs.runner || github.event.inputs.runner || 'github' }}
-          platform: ${{ inputs.platform || github.event.inputs.platform || 'linux' }}
+          runner: ${{ needs.normalize.outputs.runner }}
+          platform: ${{ needs.normalize.outputs.platform }}
           dispatch_id: ${{ inputs.dispatch_id }}
           checkout_token: ${{ secrets.GHCR_ORG_PAT || github.token }}
           artifact_token: ${{ secrets.GHCR_ORG_PAT || github.token }}
@@ -185,9 +232,10 @@ jobs:
 
   run_macos:
     name: "macOS (${{ inputs.repo }})"
-    if: ${{ (inputs.platform || github.event.inputs.platform || 'linux') == 'macos' }}
+    needs: normalize
+    if: ${{ needs.normalize.outputs.platform == 'macos' }}
     runs-on: macos-15
-    timeout-minutes: ${{ inputs.timeout_minutes }}
+    timeout-minutes: ${{ fromJSON(needs.normalize.outputs.timeout_minutes) }}
     steps:
       - name: Check out the Fleet runner repository
         uses: actions/checkout@v4
@@ -198,8 +246,8 @@ jobs:
           repo: ${{ inputs.repo }}
           ref: ${{ inputs.ref }}
           command: ${{ inputs.command }}
-          runner: ${{ inputs.runner || github.event.inputs.runner || 'github' }}
-          platform: ${{ inputs.platform || github.event.inputs.platform || 'linux' }}
+          runner: ${{ needs.normalize.outputs.runner }}
+          platform: ${{ needs.normalize.outputs.platform }}
           dispatch_id: ${{ inputs.dispatch_id }}
           checkout_token: ${{ secrets.GHCR_ORG_PAT || github.token }}
           artifact_token: ${{ secrets.GHCR_ORG_PAT || github.token }}
