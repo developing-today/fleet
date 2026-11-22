@@ -152,8 +152,9 @@ defaults:
 jobs:
   run_linux:
     name: "Linux (${{ inputs.repo }})"
-    if: ${{ inputs.platform == 'linux' }}
-    runs-on: ${{ inputs.runner == 'blacksmith' && github.repository == 'developing-today/fleet' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
+    # Older/manual dispatch clients may omit platform; keep Linux as the safe default.
+    if: ${{ (inputs.platform || github.event.inputs.platform || 'linux') != 'macos' }}
+    runs-on: ${{ (inputs.runner || github.event.inputs.runner) == 'blacksmith' && github.repository == 'developing-today/fleet' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     timeout-minutes: ${{ inputs.timeout_minutes }}
     container:
       image: ${{ inputs.container_image != '' && inputs.container_image || 'ghcr.io/dezren39/fleet-build:full' }}
@@ -168,8 +169,8 @@ jobs:
           repo: ${{ inputs.repo }}
           ref: ${{ inputs.ref }}
           command: ${{ inputs.command }}
-          runner: ${{ inputs.runner }}
-          platform: ${{ inputs.platform }}
+          runner: ${{ inputs.runner || github.event.inputs.runner || 'github' }}
+          platform: ${{ inputs.platform || github.event.inputs.platform || 'linux' }}
           dispatch_id: ${{ inputs.dispatch_id }}
           checkout_token: ${{ secrets.GHCR_ORG_PAT || github.token }}
           artifact_token: ${{ secrets.GHCR_ORG_PAT || github.token }}
@@ -184,7 +185,7 @@ jobs:
 
   run_macos:
     name: "macOS (${{ inputs.repo }})"
-    if: ${{ inputs.platform == 'macos' }}
+    if: ${{ (inputs.platform || github.event.inputs.platform || 'linux') == 'macos' }}
     runs-on: macos-15
     timeout-minutes: ${{ inputs.timeout_minutes }}
     steps:
@@ -197,8 +198,8 @@ jobs:
           repo: ${{ inputs.repo }}
           ref: ${{ inputs.ref }}
           command: ${{ inputs.command }}
-          runner: ${{ inputs.runner }}
-          platform: ${{ inputs.platform }}
+          runner: ${{ inputs.runner || github.event.inputs.runner || 'github' }}
+          platform: ${{ inputs.platform || github.event.inputs.platform || 'linux' }}
           dispatch_id: ${{ inputs.dispatch_id }}
           checkout_token: ${{ secrets.GHCR_ORG_PAT || github.token }}
           artifact_token: ${{ secrets.GHCR_ORG_PAT || github.token }}
