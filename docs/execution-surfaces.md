@@ -95,6 +95,73 @@ plus the fleet umbrella's public members: `developing-today/zettel`,
 credential available to Actions can read them, so no Actions job may
 pretend to verify them.
 
+### Placement dispatch: `fleet queue dispatch` and `fleet-command`
+
+The generic runners above are the raw workflows. The route agents
+actually use day to day is **placement dispatch** in the `fleet`
+binary (developed in `developing-today/code`, `pkgs/fleet`):
+
+```sh
+fleet queue dispatch --repo <owner/name> --ref <ref> \
+  --command '<cmd>' --dispatch --json
+fleet queue session status <HANDLE>   # async tracking
+fleet queue session result <HANDLE>   # outcome; logs via the run URL
+```
+
+Placement picks a host repo for `.github/workflows/fleet-command.yml`
+from the surface registry (`pkgs/fleet/fleet-surfaces.json` in the
+code repo) by **live load**: it counts active jobs per owner against
+the registered concurrency caps — the developing-today org at 20, the
+dezren39 account at 40 — and sends the job to the least-loaded
+eligible pool. Registered surfaces today are `dezren39/fleet`
+(personal, dispatched as the developing-today GitHub App),
+`developing-today/fleet` (org), and `developing-today-forks/fleet`
+(public targets only), plus a Blacksmith variant of the org surface.
+
+Rules of the road:
+
+- **GitHub-hosted runners are the default.** Blacksmith is a fallback
+  inside a configured free-minute budget; paid Blacksmith minutes
+  require the explicit `--allow-paid-blacksmith <minutes>` override,
+  and `--runner blacksmith` is the only way to pin it.
+- **macOS is opt-in** with `--platform macos` (org macOS concurrency
+  cap 5); Blacksmith is Linux-only.
+- **Caches are keyed for reuse:** the workflow's Actions cache
+  defaults to the `fleet-deps-v1` namespace with branch keys and
+  default-branch restore keys; `--followup <HANDLE|OWNER/REPO#RUN_ID>`
+  keeps a repeat job on the previous run's host and can download its
+  `fleet-output` artifact; `--push-nix-cache` publishes a build's
+  `./result` closure to the shared fleet Nix (R2) cache.
+- Sessions are reconnectable from any seat with the portable
+  `OWNER/REPO#RUN_ID` identifier; the run's log is the Actions log
+  (`gh run view --log`).
+
+`fleet shell --target actions --repo <owner/name> -- <cmd>` is the
+same dispatch through the shell verb (it waits for the result;
+`--detach` returns the session handle instead).
+
+**Dispatch-first rule (2026-11-23):** builds, tests, and other
+CPU-heavy work are dispatched through this route — push the code,
+dispatch against the ref, poll the session, collect the result.
+Compiling on an agent sandbox is the wrong default, and the laptop is
+the fallback only for jobs that cannot be dispatched (NixOS builds
+and activations, stateful or secret-bearing work, a quick
+single-binary check). The agent runbook is
+`pkgs/fleet/doc/agents/remote-build-and-test.md` in
+`developing-today/code`.
+
+### Explicit dispatch: `fleet dispatch-test`
+
+`fleet dispatch-test scan|submit|status` is the older explicit route
+for work inside a fleet-umbrella submodule: `scan` ranks this repo's
+copies (the source plus its fork network) by live Actions load,
+`submit --submodule <name> --ref <ref> --commands '<cmds>'` stores
+the job in the fleet-dispatch Turso store and dispatches
+`fleet-dispatch-test.yml` in the chosen copy, and `status <job-id>`
+reads the stored result. Linux, GitHub-hosted, in the same
+`fleet-build` container. Prefer placement dispatch for general work;
+use this when the job is naturally "run inside submodule X at ref Y".
+
 ### The recurring proof: fleet umbrella verification
 
 `.github/workflows/fleet-umbrella-verify.yml` runs **twice daily**
