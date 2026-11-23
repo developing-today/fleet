@@ -1,0 +1,18 @@
+# treefmt config for the fleet umbrella's own sources (dezren39/fleet#89).
+#
+# The umbrella tree is almost entirely submodule gitlinks; its own
+# formattable surface is small and real: flake.nix (the fleet-wide
+# nixpkgs pin) and containers/fleet-build/export.sh. Markdown and
+# workflow YAML are deliberately NOT covered — prettier churn on the
+# long design docs buys nothing, and the auto-format workflow must
+# never rewrite workflow files.
+[formatter.nix]
+command = "nixfmt"
+includes = ["*.nix"]
+
+[formatter.sh]
+command = "shfmt"
+# export.sh is written with 2-space indentation (verified: 0 tab-indented
+# lines); -i 2 keeps the first auto-format pass near-zero diff.
+options = ["-w", "-i", "2"]
+includes = ["*.sh"]

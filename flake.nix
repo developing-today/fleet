@@ -23,8 +23,36 @@
 
   outputs =
     { self, nixpkgs, ... }:
+    let
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+        "x86_64-darwin"
+        "aarch64-darwin"
+      ];
+      forEachSystem = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+    in
     {
       # Exposed so tooling can read the pin without parsing the lock.
       fleetNixpkgsRev = nixpkgs.rev;
+
+      # `nix run .#format -- <files>`: treefmt with this repo's
+      # formatters (treefmt.toml) from the pinned nixpkgs. Used by
+      # .github/workflows/auto-format.yml (dezren39/fleet#89).
+      apps = forEachSystem (pkgs: {
+        format = {
+          type = "app";
+          program = "${pkgs.writeShellScript "fleet-format" ''
+            export PATH="${
+              pkgs.lib.makeBinPath [
+                pkgs.treefmt
+                pkgs.nixfmt
+                pkgs.shfmt
+              ]
+            }:$PATH"
+            exec treefmt --no-cache "$@"
+          ''}";
+        };
+      });
     };
 }

@@ -14,6 +14,19 @@ name: sync-upstream (daily pull from dezren39/fleet)
 # never auto-resolves a conflict. In dezren39/fleet itself the job is a
 # guarded no-op.
 #
+# SCOPE (#87): the job below runs ONLY in the two mirrors above. Every
+# other fork of this repo is kept current by the central push
+# (sync-forks.yml in dezren39/fleet, PAT-driven, on every push to
+# main), and this pull cannot run there: the workflow mints a token
+# for the developing.today app (5454422), which is installed only on
+# the developing.today orgs, and the org-level FLEET_APP_PRIVATE_KEY
+# on the other orgs belongs to the fleet app (5612056) — a JWT for
+# one app signed with the other app's key is rejected, so a scheduled
+# run on those forks could only ever fail. Their copy of this file is
+# inert by the job guard below, not by accident. Extending this App
+# backstop to the other orgs is an app-install decision tracked on
+# #87 / developing-today/code#6645, not a workflow change.
+#
 # The forks' main branches are locked by a ruleset (no creations,
 # updates, deletions, or force pushes) whose only bypass is the
 # developing.today GitHub App — GitHub's ruleset model cannot name the
@@ -45,7 +58,7 @@ concurrency:
 jobs:
   sync:
     name: pull upstream main
-    if: github.repository != 'dezren39/fleet'
+    if: github.repository == 'developing-today/fleet' || github.repository == 'developing-today-forks/fleet'
     runs-on: ubuntu-24.04
     steps:
       - name: Mint the developing.today app token

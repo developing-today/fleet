@@ -165,6 +165,13 @@ takes commits. `developing-today/fleet` and
   loudly, and files an issue here **as the developing.today app** —
   it never force-pushes and never auto-resolves a conflict. In this
   repo the job is a guarded no-op.
+  The job is guarded to the two mirror forks only: on every other
+  fork of this repo the pull cannot authenticate (the developing.today
+  app is not installed there, and the org-level app key belongs to the
+  fleet app — #87), so those forks are kept current instead by the
+  central push, `.github/workflows/sync-forks.yml` in this repo,
+  which offers each push to `main` to every fork via the
+  merge-upstream API under the `GHCR_ORG_PAT` classic PAT.
 - **The sync runs as the app.** GitHub's ruleset model cannot name
   the GitHub Actions integration as a bypass actor on a repository
   ruleset (it is not part of the owner org), and organization

@@ -218,7 +218,16 @@ jobs:
             ghcr.io/developing-today/fleet-build:full
             ghcr.io/developing-today/fleet-build:full-sha-${{ github.sha }}
           cache-from: type=registry,ref=ghcr.io/dezren39/fleet-build:buildcache-full
-          cache-to: type=registry,ref=ghcr.io/dezren39/fleet-build:buildcache-full,mode=max
+          # mode=min, NOT mode=max (#88): the full target is FROM base, so
+          # mode=max also re-exports the base stage's layers. Those blobs
+          # already live in the developing-today-owned fleet-build package
+          # (pushed by the "Push :base" step below), and GHCR denies the
+          # cross-repository blob mount for the dezren39 cache token
+          # ("token provided does not match expected scopes"), failing the
+          # whole build leg at "exporting cache to registry". mode=min
+          # exports only the full stage's own layers (the nar-cache import
+          # layer), which is the layer that actually changes per pin.
+          cache-to: type=registry,ref=ghcr.io/dezren39/fleet-build:buildcache-full,mode=min
       - name: Check out code at its target pin for the smoke test
         env:
           TARGETS: ${{ needs.check.outputs.targets }}

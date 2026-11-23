@@ -53,7 +53,8 @@ while read -r repo col2 col3; do
   # Manifest columns: <repo> [shell] [optional] — the shell column names
   # the devShells attribute to warm (default: "default"); a bare
   # "optional" in the shell column means shell=default + optional.
-  shell="default"; opt=""
+  shell="default"
+  opt=""
   for tok in "${col2:-}" "${col3:-}"; do
     [ -z "$tok" ] && continue
     if [ "$tok" = "optional" ]; then opt="optional"; else shell="$tok"; fi
@@ -61,7 +62,10 @@ while read -r repo col2 col3; do
   dir="$ctx/$repo"
   if [ ! -f "$dir/flake.nix" ]; then
     echo "export: $repo has no flake.nix — skipped"
-    [ "${opt:-}" = "optional" ] && continue || { echo "export: $repo required but missing"; exit 1; }
+    [ "${opt:-}" = "optional" ] && continue || {
+      echo "export: $repo required but missing"
+      exit 1
+    }
   fi
   echo "export: building $repo dev shell '$shell' (lock as committed: $(md5sum "$dir/flake.lock" 2>/dev/null | cut -d' ' -f1))"
   ok=""
@@ -74,17 +78,28 @@ while read -r repo col2 col3; do
     # a log whose HEAD is printed on failure — v2 printed only the
     # tail, which was an anonymous stack trace (run 41521687044).
     errlog="$(mktemp)"
-    if out=$(nix build --accept-flake-config --no-link --print-out-paths "$dir#devShells.x86_64-linux.$shell" 2>"$errlog"); then ok=1; break; fi
-    echo "export: $repo attempt $attempt failed:"; grep -vE "^[0-9]+# " "$errlog" | head -25
+    if out=$(nix build --accept-flake-config --no-link --print-out-paths "$dir#devShells.x86_64-linux.$shell" 2>"$errlog"); then
+      ok=1
+      break
+    fi
+    echo "export: $repo attempt $attempt failed:"
+    grep -vE "^[0-9]+# " "$errlog" | head -25
   done
   rm -f "${errlog:-}"
   if [ -z "$ok" ]; then
-    [ "${opt:-}" = "optional" ] && { echo "export: $repo FAILED (optional, continuing)"; continue; }
-    echo "export: $repo FAILED (required)"; exit 1
+    [ "${opt:-}" = "optional" ] && {
+      echo "export: $repo FAILED (optional, continuing)"
+      continue
+    }
+    echo "export: $repo FAILED (required)"
+    exit 1
   fi
   out="$(echo "$out" | tail -n 1)"
   echo "export: copying closure of $out to nar-cache"
-  nix copy --to "file://$export_dir" "$out" || { echo "export: $repo copy FAILED"; exit 1; }
+  nix copy --to "file://$export_dir" "$out" || {
+    echo "export: $repo copy FAILED"
+    exit 1
+  }
   # Strict mode (EXPORT_STRICT_PUSH=1, set by the gated variant
   # workflow): a hosted-cache push that fails — or is skipped
   # because its credentials are absent — fails the whole leg. The
@@ -108,8 +123,8 @@ while read -r repo col2 col3; do
     fi
   }
   r2_push() {
-    nix path-info --recursive "$out" | nix store sign --key-file "$NIX_CACHE_SIGNING_KEY_FILE" --stdin \
-      && nix copy --to "$NIX_CACHE_UPLOAD_URL" "$out"
+    nix path-info --recursive "$out" | nix store sign --key-file "$NIX_CACHE_SIGNING_KEY_FILE" --stdin &&
+      nix copy --to "$NIX_CACHE_UPLOAD_URL" "$out"
   }
   cachix_push() {
     nix path-info --recursive "$out" | xargs -r nix run "github:NixOS/nixpkgs/$(nix eval --raw "$ctx#fleetNixpkgsRev")#cachix" -- push developing-today
@@ -128,9 +143,9 @@ while read -r repo col2 col3; do
   # what the image build consumes; a cache outage must not fail it.
   if [ -n "${NIX_CACHE_UPLOAD_URL:-}" ] && [ -n "${NIX_CACHE_SIGNING_KEY_FILE:-}" ]; then
     echo "export: pushing $repo closure to the fleet nix-cache"
-    run_push r2_push \
-      && echo "export: $repo pushed to nix-cache" \
-      || push_failed "$repo nix-cache"
+    run_push r2_push &&
+      echo "export: $repo pushed to nix-cache" ||
+      push_failed "$repo nix-cache"
   elif [ "${EXPORT_STRICT_PUSH:-0}" = "1" ]; then
     echo "export: ERROR $repo nix-cache push skipped (credentials absent) and EXPORT_STRICT_PUSH=1 — failing" >&2
     exit 1
@@ -147,13 +162,13 @@ while read -r repo col2 col3; do
   # the pin instead of drifting.
   if [ -n "${CACHIX_AUTH_TOKEN:-}" ]; then
     echo "export: pushing $repo closure to Cachix (developing-today)"
-    run_push cachix_push \
-      && echo "export: $repo pushed to Cachix" \
-      || push_failed "$repo Cachix"
+    run_push cachix_push &&
+      echo "export: $repo pushed to Cachix" ||
+      push_failed "$repo Cachix"
   elif [ "${EXPORT_STRICT_PUSH:-0}" = "1" ]; then
     echo "export: ERROR $repo Cachix push skipped (credentials absent) and EXPORT_STRICT_PUSH=1 — failing" >&2
     exit 1
   fi
   echo "export: $repo OK"
-done < "$manifest"
+done <"$manifest"
 echo "export: done — $(du -sh "$export_dir" | cut -f1) in nar-cache"
