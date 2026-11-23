@@ -323,4 +323,20 @@ jobs:
           # override, no runuser — against the same warmed shell,
           # and it must find cargo inside the shell. HOME is left
           # exactly as the job container provides it.
+          #
+          # First hand the tree back to root: code-smoke is
+          # vscode-owned by design (the step above chowns it so
+          # vscode's libgit2 accepts it), and root's libgit2 applies
+          # the same ownership rule in reverse — the first publish
+          # with this step died on exactly that (run 45193636584:
+          # "repository path ... is not owned by current user",
+          # libgit2 error code 7). safe.directory is deliberately
+          # NOT the fix here: the dispatch surfaces can lean on it
+          # because their checkout and command share one user, but
+          # in this job $HOME (/github/home) is not root-owned and
+          # Nix falls back to the passwd home, so which global git
+          # config root's fetcher would read is ambiguous. Ownership
+          # needs no config lookup at all. This is the job's last
+          # step, so taking the tree back costs nothing.
+          chown -R root:root "$GITHUB_WORKSPACE/code-smoke"
           timeout 600 bash -c 'cd "$GITHUB_WORKSPACE/code-smoke" && nix develop .#fleet --offline --command cargo --version'
