@@ -251,6 +251,18 @@ jobs:
           git --version
           jq --version
           nix --version
+          # code#13331: the baked Rust toolchain and bun, as root —
+          # the user every GHA job container in this image runs as.
+          cargo --version
+          rustc --version
+          bun --version
+          # code#13159: root nix is configured by the SYSTEM nix.conf
+          # and builds run as the baked nixbld group (populated
+          # member list — nix rejects a memberless group).
+          grep -q 'build-users-group = nixbld' /etc/nix/nix.conf
+          [ "$(nix config show build-users-group)" = "nixbld" ]
+          id nixbld1
+          getent group nixbld | cut -d: -f4 | grep -q nixbld1
           # `su vscode` asks for a password in this image (run
           # 41513747440); runuser from root does not, and HOME must be
           # pointed at the vscode home for its Nix profile to resolve.
@@ -303,3 +315,12 @@ jobs:
           # code warms its lean `fleet` shell (see warm-manifest.txt),
           # not the default shell — open the one that was warmed.
           timeout 600 runuser -u vscode -- env HOME=/home/vscode bash -lc 'cd "$GITHUB_WORKSPACE/code-smoke" && nix develop .#fleet --offline --accept-flake-config --command true'
+      - name: Warmed shell opens OFFLINE as ROOT, no extra nix flags (code#13159 acceptance shape)
+        run: |
+          # The dispatch surfaces run as root; this is the boring
+          # form from code#13159's acceptance — no
+          # --extra-experimental-features, no build-users-group
+          # override, no runuser — against the same warmed shell,
+          # and it must find cargo inside the shell. HOME is left
+          # exactly as the job container provides it.
+          timeout 600 bash -c 'cd "$GITHUB_WORKSPACE/code-smoke" && nix develop .#fleet --offline --command cargo --version'

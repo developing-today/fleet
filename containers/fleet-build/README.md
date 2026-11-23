@@ -133,5 +133,12 @@ Container-job specifics worth knowing:
 
 Ubuntu 24.04 (devcontainers base), git, gh (via base image), direnv,
 jq, ripgrep, fd, shellcheck, sqlite3, python3, Go (pinned), Nix
-(pinned, flakes on, sandbox off — required inside containers).
-Everything else comes from the repos' own dev shells in `:full`.
+(pinned, flakes on, sandbox off — required inside containers), Rust
+(pinned, via rustup: the fleet-wide toolchain pin, currently 1.99.1),
+and bun (pinned). Nix can build as any user: the `nixbld` build-users
+group is baked in and a system `/etc/nix/nix.conf` configures root
+and other non-vscode users (code#13159, code#13331); vscode keeps
+its own single-user config. Everything else comes from the repos'
+own dev shells in `:full`. Dispatch surfaces additionally run
+`.github/scripts/fleet-executor-prep.sh`, which supplies the same
+state on images published before the bake and is a no-op here.

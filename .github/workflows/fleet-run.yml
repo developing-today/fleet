@@ -470,6 +470,24 @@ jobs:
             fi
             git clone "${clone_args[@]}" "$url" "$dest"
           done < <(jq -c '.[]' <<<"$CHECKOUTS_JSON")
+      - name: Check out the runner repository (for the executor prep script)
+        uses: actions/checkout@v4
+        with:
+          path: .fleet-runner
+      # Make the executor boring BEFORE the command runs (code#13159,
+      # code#13331): root nix gets its build-users group + system
+      # config, a Rust toolchain and bun appear if the image predates
+      # them. No-op on the baked image. Before this step existed, the
+      # header's claim that "the pinned toolchain, Nix, and the baked
+      # cache configuration are already there" was aspirational for
+      # cargo/bun and wrong for root nix.
+      - name: Prepare executor environment
+        run: |
+          # $GITHUB_WORKSPACE, not the github.workspace expression:
+          # in a job container the expression is the HOST path,
+          # which does not exist inside the container.
+          export FLEET_TARGET_DIR="$GITHUB_WORKSPACE/target"
+          bash .fleet-runner/.github/scripts/fleet-executor-prep.sh
       - name: Restore actions/cache (opt-in per entry)
         if: ${{ matrix.cache_key != '' }}
         uses: actions/cache@v4

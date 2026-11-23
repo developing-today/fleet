@@ -171,6 +171,7 @@ runs:
           ".fleet/cache/cargo" \
           ".fleet/cache/cargo-target" \
           ".fleet/cache/rustup" \
+          ".fleet/cache/bun" \
           ".fleet/cache/go/pkg/mod" \
           ".fleet/cache/go/build")"
         if [ -n "$EXTRA_CACHE_PATHS" ]; then
@@ -193,6 +194,32 @@ runs:
         path: ${{ steps.cache-settings.outputs.paths }}
         key: ${{ steps.cache-settings.outputs.key }}
         restore-keys: ${{ steps.cache-settings.outputs.restore_keys }}
+
+    # Make the executor boring BEFORE the command runs (code#13159,
+    # code#13331): root nix gets its build-users group + system
+    # config, the restored CARGO_HOME/RUSTUP_HOME get a toolchain if
+    # the cache was cold, and bun appears if the image predates it.
+    # The script is a no-op on the baked image and self-skips on
+    # macOS. It lives in the runner repo, which fleet-command.yml
+    # checks out at the workspace root before invoking this action.
+    - name: Prepare executor environment
+      shell: bash
+      run: |
+        set -euo pipefail
+        # $GITHUB_WORKSPACE, not the github.workspace expression: in a
+        # job container the expression is the HOST path, which does
+        # not exist inside the container (proven by the first proof
+        # run of code#13159's fix, dezren39/fleet run 45187614820 —
+        # the prep step looked under /home/runner/work/... and the
+        # command then failed on the unprepared environment).
+        export FLEET_TARGET_DIR="$GITHUB_WORKSPACE/target"
+        export FLEET_BUN_HOME="$GITHUB_WORKSPACE/.fleet/cache/bun"
+        prep="$GITHUB_WORKSPACE/.github/scripts/fleet-executor-prep.sh"
+        if [ -f "$prep" ]; then
+          bash "$prep"
+        else
+          echo "::warning::fleet-executor-prep.sh not found in the runner repo checkout; continuing with the image's baked environment"
+        fi
 
     - name: Run command
       env:

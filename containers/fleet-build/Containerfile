@@ -1,9 +1,12 @@
 # fleet-build — one image for GitHub Actions job containers AND Codespaces.
 #
 # Two targets:
-#   base  (published as :latest / :base) — OS tools + pinned Nix + pinned Go.
-#         Everything is installed from upstream binaries / apt. NO nixpkgs
-#         is involved in building this layer at all.
+#   base  (published as :latest / :base) — OS tools + pinned Nix + pinned Go
+#         + pinned Rust (rustup) + pinned bun, and a Nix setup that can
+#         build as ANY user (nixbld build users + a system nix.conf, so
+#         root-run job containers work out of the box — code#13159,
+#         code#13331). Everything is installed from upstream binaries /
+#         apt. NO nixpkgs is involved in building this layer at all.
 #   full  (published as :full) — base + the fleet repos' Nix dev shells
 #         realised into /nix inside the image, using each repo's flake.lock
 #         EXACTLY as committed. The warm step never runs `nix flake update`
@@ -28,11 +31,15 @@
 # ---------- pins (bump deliberately, in a PR, never by a lock update) ----
 ARG NIX_VERSION=2.35.4
 ARG GO_VERSION=1.25.14
+ARG RUST_TOOLCHAIN=1.99.1
+ARG BUN_VERSION=1.4.5
 
 # ============================ base =====================================
 FROM mcr.microsoft.com/devcontainers/base:ubuntu-24.04 AS base
 ARG NIX_VERSION
 ARG GO_VERSION
+ARG RUST_TOOLCHAIN
+ARG BUN_VERSION
 
 USER root
 RUN apt-get update \
@@ -41,6 +48,22 @@ RUN apt-get update \
       unzip xz-utils ca-certificates curl git \
  && rm -rf /var/lib/apt/lists/* \
  && ln -sf /usr/bin/fdfind /usr/local/bin/fd
+
+# The nixbld build-users group, with a populated member list (code#13159).
+# Nix's default build-users-group is `nixbld`, but a single-user install
+# never creates it, so any nix invocation by a user without the vscode
+# user's nix.conf (root in GHA job containers) died with "the group
+# 'nixbld' specified in 'build-users-group' does not exist". Nix checks
+# the group's MEMBER LIST — users whose primary group is nixbld but who
+# are not listed are "no members" — so every user is added explicitly.
+# The recipe is the one proven live in this image by the 2026-11-23
+# 9111-02 dispatch (forks/fleet run 45177477297). The runtime half for
+# already-published images is .github/scripts/fleet-executor-prep.sh.
+RUN groupadd -f nixbld \
+ && for i in $(seq 1 32); do \
+      useradd -M -g nixbld -d /var/empty -s /bin/false "nixbld$i"; \
+      usermod -a -G nixbld "nixbld$i"; \
+    done
 
 # Pinned Go, from the official tarball (no nixpkgs, no devcontainer
 # feature — GHA job containers do not apply devcontainer features, so
@@ -63,6 +86,46 @@ USER root
 # default; the store is world-readable and root bypasses ownership).
 RUN ln -s /home/vscode/.nix-profile/bin/nix /usr/local/bin/nix \
  && ln -s /home/vscode/.nix-profile/bin/nix-build /usr/local/bin/nix-build || true
+
+# A SYSTEM nix.conf, so root (and any user other than vscode) gets a
+# working configuration too (code#13159). Root never reads vscode's
+# ~/.config/nix/nix.conf, so before this file existed a root
+# `nix develop` failed in sequence on experimental features, the
+# missing nixbld group, and — with build-users-group forced empty —
+# builds running as root tripping the /homeless-shelter purity check.
+# vscode's own config still wins for vscode (user config overrides
+# the system file), keeping its build-users-group empty against the
+# single-user store it owns; everyone else builds as the nixbld users
+# created above. Same substituters/keys as the vscode config.
+RUN mkdir -p /etc/nix \
+ && printf '%s\n' \
+      'experimental-features = nix-command flakes ca-derivations' \
+      'build-users-group = nixbld' \
+      'sandbox = false' \
+      'eval-cache = false' \
+      'extra-substituters = https://nix-cache.developing-today.workers.dev https://developing-today.cachix.org' \
+      'extra-trusted-public-keys = nix-cache-1:x/kKZuzyQI3L0/twmOp3w2U68F2ZgM3WnH3ERYKrwf8= developing-today.cachix.org-1:dfIGqIJODUw9V/O9yUrYP2d3tjJtk3SZTDxOBWn9vN4=' \
+      > /etc/nix/nix.conf
+
+# Pinned Rust via rustup, system-wide (code#13331): the runbook's plain
+# `cargo test` form found no toolchain in this image at all. The
+# default toolchain matches the fleet-wide rust-toolchain.toml pin
+# (code root / pkgs/id / pkgs/fleet: 1.99.1); the rustup shims still
+# honour a repo's own rust-toolchain.toml on first use inside it.
+# World-writable: job containers run as root, Codespaces as vscode,
+# and either may need to manage toolchains/components.
+ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path \
+      --profile default --default-toolchain "${RUST_TOOLCHAIN}" \
+ && chmod -R a+rwX /usr/local/rustup /usr/local/cargo
+
+# Pinned bun, from the official release zip (the repos' TypeScript
+# packages test with bun; the image shipped none).
+RUN curl -fsSL "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip" -o /tmp/bun.zip \
+ && unzip -o -q /tmp/bun.zip -d /tmp/bun \
+ && install -m 0755 /tmp/bun/bun-linux-x64/bun /usr/local/bin/bun \
+ && rm -rf /tmp/bun /tmp/bun.zip
+ENV PATH="/usr/local/cargo/bin:/home/vscode/.nix-profile/bin:/usr/local/go/bin:${PATH}"
 USER vscode
 WORKDIR /home/vscode
 
