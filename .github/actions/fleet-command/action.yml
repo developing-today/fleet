@@ -81,13 +81,37 @@ runs:
         fi
         [ -n "$CACHE_KEY" ] || fail "cache key prefix cannot be empty"
 
+    - name: Normalize target checkout ref
+      id: target-ref
+      shell: bash
+      env:
+        TARGET_REF: ${{ inputs.ref }}
+      run: |
+        set -euo pipefail
+        bash "$GITHUB_WORKSPACE/.github/scripts/normalize-fleet-command-ref.sh" "$TARGET_REF" >> "$GITHUB_OUTPUT"
+
     - name: Check out target repository
+      id: target-checkout
+      continue-on-error: true
       uses: actions/checkout@v4
       with:
         repository: ${{ inputs.repo }}
-        ref: ${{ inputs.ref }}
+        ref: ${{ steps.target-ref.outputs.ref }}
         token: ${{ inputs.checkout_token }}
         path: target
+
+    - name: Report target checkout failure
+      if: ${{ steps.target-checkout.outcome == 'failure' }}
+      shell: bash
+      env:
+        TARGET_REPO: ${{ inputs.repo }}
+        TARGET_REF: ${{ steps.target-ref.outputs.ref }}
+      run: |
+        set -euo pipefail
+        message="Fleet target checkout failed before command execution (repo=$TARGET_REPO ref=${TARGET_REF:-<default>}); inspect the preceding Check out target repository step. The target command did not run."
+        echo "::error::$message"
+        printf '## Fleet target checkout failed\n\n%s\n\n**Target command was not run.**\n' "$message" >> "$GITHUB_STEP_SUMMARY"
+        exit 1
 
     - name: Download previous Fleet output
       if: ${{ inputs.previous_run_id != '' }}
